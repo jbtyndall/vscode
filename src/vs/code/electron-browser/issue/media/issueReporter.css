@@ -273,6 +273,7 @@ input, select, textarea {
 
 a {
 	color: #CCCCCC;
+	text-decoration: none;
 }
 
 .invalid-input {
@@ -339,10 +340,22 @@ button {
 	}
 }
 
-body::-webkit-scrollbar {
+.issues-container::-webkit-scrollbar, body::-webkit-scrollbar {
 	width: 14px;
 }
 
-body::-webkit-scrollbar-thumb {
+.issues-container::-webkit-scrollbar, body::-webkit-scrollbar-thumb {
 	min-height: 20px;
+}
+
+.issues-container {
+	margin-top: .5em;
+	margin-left: 1.5em;
+	padding: 3px 15px;
+	height: 108px;
+	overflow-y: auto;
+}
+
+.issues-container > .issue {
+	padding: 1px 0;
 }

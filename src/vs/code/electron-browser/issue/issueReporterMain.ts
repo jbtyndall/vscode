@@ -30,7 +30,7 @@ import { resolveCommonProperties } from 'vs/platform/telemetry/node/commonProper
 import { WindowsChannelClient } from 'vs/platform/windows/common/windowsIpc';
 import { EnvironmentService } from 'vs/platform/environment/node/environmentService';
 import { IssueReporterModel } from 'vs/code/electron-browser/issue/issueReporterModel';
-import { IssueReporterData, IssueReporterStyles, IssueType } from 'vs/platform/issue/common/issue';
+import { IssueReporterData, IssueReporterStyles, IssueType, IssueReporterFeatures } from 'vs/platform/issue/common/issue';
 import BaseHtml from 'vs/code/electron-browser/issue/issueReporterPage';
 import { ILocalExtension } from 'vs/platform/extensionManagement/common/extensionManagement';
 import { debounce } from 'vs/base/common/decorators';
@@ -38,8 +38,14 @@ import * as platform from 'vs/base/common/platform';
 
 const MAX_URL_LENGTH = 5400;
 
+interface SearchResult {
+	html_url: string;
+	title: string;
+}
+
 export interface IssueReporterConfiguration extends IWindowConfiguration {
 	data: IssueReporterData;
+	features: IssueReporterFeatures;
 }
 
 export function startup(configuration: IssueReporterConfiguration) {
@@ -54,6 +60,7 @@ export class IssueReporter extends Disposable {
 	private telemetryService: ITelemetryService;
 	private issueReporterModel: IssueReporterModel;
 	private shouldQueueSearch = true;
+	private features: IssueReporterFeatures;
 	private receivedSystemInfo = false;
 	private receivedPerformanceInfo = false;
 
@@ -75,6 +82,8 @@ export class IssueReporter extends Disposable {
 			extensionsDisabled: this.environmentService.disableExtensions,
 			reprosWithoutExtensions: false
 		});
+
+		this.features = configuration.features;
 
 		ipcRenderer.on('issuePerformanceInfoResponse', (event, info) => {
 			this.issueReporterModel.update(info);
@@ -169,15 +178,15 @@ export class IssueReporter extends Disposable {
 		}
 
 		if (styles.sliderBackgroundColor) {
-			content.push(`body::-webkit-scrollbar-thumb { background-color: ${styles.sliderBackgroundColor}; }`);
+			content.push(`.issues-container::-webkit-scrollbar-thumb, body::-webkit-scrollbar-thumb { background-color: ${styles.sliderBackgroundColor}; }`);
 		}
 
 		if (styles.sliderActiveColor) {
-			content.push(`body::-webkit-scrollbar-thumb:active { background-color: ${styles.sliderActiveColor}; }`);
+			content.push(`.issues-container::-webkit-scrollbar-thumb:active, body::-webkit-scrollbar-thumb:active { background-color: ${styles.sliderActiveColor}; }`);
 		}
 
 		if (styles.sliderHoverColor) {
-			content.push(`body::-webkit-scrollbar-thumb:hover { background-color: ${styles.sliderHoverColor}; }`);
+			content.push(`.issues-container::-webkit-scrollbar-thumb:hover, body::-webkit-scrollbar-thumb:hover { background-color: ${styles.sliderHoverColor}; }`);
 		}
 
 		styleTag.innerHTML = content.join('\n');
@@ -275,7 +284,7 @@ export class IssueReporter extends Disposable {
 			this.issueReporterModel.update({ issueDescription: (<HTMLInputElement>event.target).value });
 		});
 
-		document.getElementById('issue-title').addEventListener('input', (e) => { this.searchGitHub(e); });
+		document.getElementById('issue-title').addEventListener('input', (e) => { this.searchIssues(e); });
 
 		document.getElementById('github-submit-btn').addEventListener('click', () => this.createIssue());
 
@@ -355,33 +364,69 @@ export class IssueReporter extends Disposable {
 	}
 
 	@debounce(300)
-	private searchGitHub(event: Event): void {
+	private searchIssues(event: Event): void {
 		const title = (<HTMLInputElement>event.target).value;
+		if (this.features.useDuplicateSearch) {
+			this.searchDuplicates(title);
+		} else {
+			this.searchGitHub(title);
+		}
+	}
+
+	private searchDuplicates(title: string): void {
 		const similarIssues = document.getElementById('similar-issues');
 		if (title) {
-			const query = `is:issue+repo:microsoft/vscode+${title}`;
+			// TODO: Change to HTTPS
+			const url = 'http://vscode-probot.westus.cloudapp.azure.com:5010/duplicate_candidates';
+			const init = {
+				method: 'POST',
+				body: JSON.stringify({
+					title
+				}),
+				headers: new Headers({
+					'Content-Type': 'application/json'
+				})
+			};
+
+			window.fetch(url, init).then((response) => {
+				response.json().then(result => {
+					similarIssues.innerHTML = '';
+					if (result && result.candidates && result.candidates.length) {
+						const normalizedResults = result.candidates.map(result => {
+							return {
+								html_url: `https://github.com/Microsoft/vscode/issues/${result.number}`,
+								title: result.title
+							};
+						});
+
+						this.displaySearchResults(normalizedResults);
+					} else if (result && result.candidates) {
+						const message = $('div.list-title');
+						message.textContent = localize('noResults', "No results found");
+						similarIssues.appendChild(message);
+					} else {
+						throw new Error();
+					}
+				}).catch((error) => {
+					this.logSearchError(error);
+				});
+			}).catch((error) => {
+				this.logSearchError(error);
+			});
+		} else {
+			similarIssues.innerHTML = '';
+		}
+	}
+
+	private searchGitHub(title: string): void {
+		const query = `is:issue+repo:microsoft/vscode+${title}`;
+		const similarIssues = document.getElementById('similar-issues');
+		if (title) {
 			window.fetch(`https://api.github.com/search/issues?q=${query}`).then((response) => {
 				response.json().then(result => {
 					similarIssues.innerHTML = '';
 					if (result && result.items && result.items.length) {
-						const issues = $('ul');
-						const issuesText = $('div.list-title');
-						issuesText.textContent = localize('similarIssues', "Similar issues");
-
-						const { items } = result;
-						const numResultsToDisplay = items.length < 5 ? items.length : 5;
-						for (let i = 0; i < numResultsToDisplay; i++) {
-							const link = $('a', { href: items[i].html_url });
-							link.textContent = items[i].title;
-							link.addEventListener('click', openLink);
-							link.addEventListener('auxclick', openLink);
-
-							const item = $('li', {}, link);
-							issues.appendChild(item);
-						}
-
-						similarIssues.appendChild(issuesText);
-						similarIssues.appendChild(issues);
+						this.displaySearchResults(result.items);
 					} else if (result && result.items) {
 						const message = $('div.list-title');
 						message.textContent = localize('noResults', "No results found");
@@ -396,7 +441,7 @@ export class IssueReporter extends Disposable {
 						if (this.shouldQueueSearch) {
 							this.shouldQueueSearch = false;
 							setTimeout(() => {
-								this.searchGitHub(event);
+								this.searchGitHub(title);
 								this.shouldQueueSearch = true;
 							}, timeToWait * 1000);
 						}
@@ -412,6 +457,27 @@ export class IssueReporter extends Disposable {
 		} else {
 			similarIssues.innerHTML = '';
 		}
+	}
+
+	private displaySearchResults(results: SearchResult[]) {
+		const similarIssues = document.getElementById('similar-issues');
+		const issues = $('ul.issues-container');
+		const issuesText = $('div.list-title');
+		issuesText.textContent = localize('similarIssues', "Similar issues");
+
+		const numResultsToDisplay = results.length < 5 ? results.length : 5;
+		for (let i = 0; i < numResultsToDisplay; i++) {
+			const link = $('a', { href: results[i].html_url });
+			link.textContent = results[i].title;
+			link.addEventListener('click', openLink);
+			link.addEventListener('auxclick', openLink);
+
+			const item = $('li.issue', {}, link);
+			issues.appendChild(item);
+		}
+
+		similarIssues.appendChild(issuesText);
+		similarIssues.appendChild(issues);
 	}
 
 	private logSearchError(error: Error) {

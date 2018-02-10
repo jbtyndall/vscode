@@ -42,6 +42,10 @@ export interface IssueReporterData {
 	issueType?: IssueType;
 }
 
+export interface IssueReporterFeatures {
+	useDuplicateSearch: boolean;
+}
+
 export interface IIssueService {
 	_serviceBrand: any;
 	openReporter(data: IssueReporterData): TPromise<void>;
